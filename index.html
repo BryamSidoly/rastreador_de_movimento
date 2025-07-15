@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Controlador ou Tela</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #111; color: white; text-align: center; }
+    #menu, #controller, #screen { display: none; padding: 20px; }
+    video, canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+    #feedback, #feedback-screen { margin-top: 20px; font-size: 1.2em; }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <h1>Escolha o modo</h1>
+    <button onclick="startAs('controller')">🕹️ Controlador</button>
+    <button onclick="startAs('screen')">📺 Tela</button>
+  </div>
+
+  <div id="controller">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div id="feedback">Capturando...</div>
+  </div>
+
+  <div id="screen">
+    <h2>Comando recebido:</h2>
+    <div id="feedback-screen">Aguardando comando...</div>
+  </div>
+
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.min.js"></script>
+
+  <script>
+    const videoElement = document.getElementById('video');
+    const canvasElement = document.getElementById('canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const feedbackEl = document.getElementById('feedback');
+    const feedbackScreen = document.getElementById('feedback-screen');
+
+    // Coloque aqui a URL do seu Google Apps Script Web App
+    const GAS_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbwuJlDZJos5wcpgHFuD_PpgojWADpxkGeWt7ZeCnJvhv6pIDRYAGia7PLuJuWLT1TWQ/exec';
+
+    function startAs(mode) {
+      document.getElementById('menu').style.display = 'none';
+      document.getElementById(mode).style.display = 'block';
+
+      if (mode === 'controller') startController();
+      else startScreen();
+    }
+
+    // Envia o comando para o backend via POST
+    async function sendCommand(command) {
+      try {
+        await fetch(GAS_BACKEND_URL, {
+          method: 'POST',
+          body: JSON.stringify({ command }),
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch(e) {
+        console.warn('Erro ao enviar comando:', e);
+      }
+    }
+
+    // Tela fica consultando o backend a cada 500ms
+    function startScreen() {
+      setInterval(async () => {
+        try {
+          const res = await fetch(GAS_BACKEND_URL);
+          const data = await res.json();
+          if (data?.command) {
+            feedbackScreen.innerText = data.command;
+          }
+        } catch(e) {
+          feedbackScreen.innerText = 'Erro ao buscar comando';
+        }
+      }, 500);
+    }
+
+    // Detecta um gesto simples: mão direita fechada ou aberta
+    function detectGesture(results) {
+      if (!results.rightHandLandmarks) return 'SEM MÃO DIREITA';
+
+      const thumbTip = results.rightHandLandmarks[4];
+      const indexTip = results.rightHandLandmarks[8];
+      const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+
+      if (dist < 0.05) return 'DISPARAR';
+      return 'MÃO ABERTA';
+    }
+
+    function startController() {
+      const holistic = new Holistic({
+        locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
+      });
+
+      holistic.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        refineFaceLandmarks: true,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.5
+      });
+
+      holistic.onResults(results => {
+        canvasElement.width = videoElement.videoWidth;
+        canvasElement.height = videoElement.videoHeight;
+
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+        if (results.poseLandmarks)
+          drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+        if (results.rightHandLandmarks)
+          drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, { color: '#00CCFF', lineWidth: 4 });
+        if (results.leftHandLandmarks)
+          drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, { color: '#FF66AA', lineWidth: 4 });
+        if (results.faceLandmarks)
+          drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, { color: '#C0C0C070', lineWidth: 1 });
+
+        canvasCtx.restore();
+
+        const gesture = detectGesture(results);
+        feedbackEl.innerText = `Comando: ${gesture}`;
+        sendCommand(gesture);
+      });
+
+      const camera = new Camera(videoElement, {
+        onFrame: async () => await holistic.send({ image: videoElement }),
+        width: 640,
+        height: 480,
+      });
+
+      camera.start();
+    }
+  </script>
+</body>
+</html>
